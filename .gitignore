@@ -1,0 +1,25 @@
+# PHP dependencies
+vendor/
+composer.lock
+
+# Environment
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# PHP cache
+*.cache
+*.log
+
+# Frontend (managed by submodule)
+node_modules/
+frontend/dist/
+frontend/.vite/
