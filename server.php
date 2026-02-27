@@ -580,6 +580,37 @@ $proxy = new LiveTranscriptionProxy($loop);
 $wsServer = new WsServer($proxy);
 $wsServer->enableKeepAlive($loop, 30);
 
+// Replace the handshake negotiator with one that accepts access_token.* subprotocols.
+// Ratchet's default negotiator uses strict exact-match checking, which doesn't work
+// with dynamic JWT-based subprotocols like access_token.<jwt>.
+$customNegotiator = new class(new \Ratchet\RFC6455\Handshake\RequestVerifier()) extends \Ratchet\RFC6455\Handshake\ServerNegotiator {
+    public function __construct(\Ratchet\RFC6455\Handshake\RequestVerifier $verifier) {
+        parent::__construct($verifier);
+        $this->setStrictSubProtocolCheck(false);
+    }
+
+    public function handshake(\Psr\Http\Message\RequestInterface $request): \Psr\Http\Message\ResponseInterface {
+        $response = parent::handshake($request);
+
+        // If handshake succeeded (101) but no subprotocol was set, echo back the access_token.* protocol
+        if ($response->getStatusCode() === 101 && !$response->hasHeader('Sec-WebSocket-Protocol')) {
+            $protocols = $request->getHeader('Sec-WebSocket-Protocol');
+            $all = array_map('trim', explode(',', implode(',', $protocols)));
+            foreach ($all as $proto) {
+                if (str_starts_with($proto, 'access_token.')) {
+                    $response = $response->withHeader('Sec-WebSocket-Protocol', $proto);
+                    break;
+                }
+            }
+        }
+
+        return $response;
+    }
+};
+$ref = new \ReflectionProperty($wsServer, 'handshakeNegotiator');
+$ref->setAccessible(true);
+$ref->setValue($wsServer, $customNegotiator);
+
 // Set up Symfony routing for path-based dispatch
 $routes = new RouteCollection();
 
@@ -638,11 +669,12 @@ $urlMatcher = new UrlMatcher($routes, new RequestContext());
 $router = new Router($urlMatcher);
 
 // Build the server stack: IoServer -> HttpServer -> Router -> WsServer/HttpApiHandler
+// Note: Do NOT pass $loop to factory() — on PHP 8.5+/ReactPHP, the explicit loop
+// parameter breaks HTTP request dispatching. Loop::get() singleton is shared automatically.
 $server = IoServer::factory(
     new HttpServer($router),
     (int)$PORT,
-    $HOST,
-    $loop
+    $HOST
 );
 
 // ============================================================================
@@ -653,7 +685,7 @@ $server = IoServer::factory(
  * Handles graceful shutdown on SIGTERM/SIGINT.
  * Closes all active WebSocket connections before stopping the event loop.
  */
-$shutdownHandler = function (int $signal) use ($proxy, $loop, $server) {
+$shutdownHandler = function (int $signal) use ($proxy, $server) {
     $signalName = $signal === SIGTERM ? 'SIGTERM' : 'SIGINT';
     echo "\n{$signalName} signal received: starting graceful shutdown...\n";
 
@@ -667,14 +699,14 @@ $shutdownHandler = function (int $signal) use ($proxy, $loop, $server) {
     echo "Server stopped\n";
 
     // Stop the event loop
-    $loop->stop();
+    $server->loop->stop();
     echo "Shutdown complete\n";
 };
 
 // Register signal handlers (only if pcntl extension is available)
 if (function_exists('pcntl_signal')) {
-    $loop->addSignal(SIGTERM, $shutdownHandler);
-    $loop->addSignal(SIGINT, $shutdownHandler);
+    $server->loop->addSignal(SIGTERM, $shutdownHandler);
+    $server->loop->addSignal(SIGINT, $shutdownHandler);
 }
 
 // ============================================================================
@@ -690,4 +722,4 @@ echo "GET  /api/metadata\n";
 echo "GET  /health\n";
 echo str_repeat("=", 70) . "\n\n";
 
-$loop->run();
+$server->run();
