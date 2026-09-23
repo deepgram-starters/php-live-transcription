@@ -1,5 +1,5 @@
 # Stage 1: Build custom Caddy with rate limiting module
-FROM golang:1.23-alpine AS caddy-builder
+FROM golang:1.25-alpine AS caddy-builder
 WORKDIR /build
 RUN go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
 RUN xcaddy build --with github.com/mholt/caddy-ratelimit
@@ -19,7 +19,7 @@ RUN sed -i 's|<head>|<head>\n  <base href="{{ .Req.Header.Get "X-Base-Path" }}">
 # Stage 3: Install PHP dependencies
 FROM composer:2 AS php-builder
 WORKDIR /build
-COPY composer.json ./
+COPY composer.json composer.lock ./
 RUN composer install --no-dev --optimize-autoloader --no-interaction
 
 # Stage 4: Runtime

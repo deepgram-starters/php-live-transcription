@@ -1,6 +1,5 @@
 # PHP dependencies
 vendor/
-composer.lock
 
 # Environment
 .env

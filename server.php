@@ -395,6 +395,7 @@ class LiveTranscriptionProxy implements MessageComponentInterface
         $encoding = $params['encoding'] ?? 'linear16';
         $sampleRate = $params['sample_rate'] ?? '16000';
         $channels = $params['channels'] ?? '1';
+        $interimResults = $params['interim_results'] ?? 'true';
 
         // Build Deepgram WebSocket URL with query parameters
         $deepgramUrl = 'wss://api.deepgram.com/v1/listen'
@@ -403,7 +404,8 @@ class LiveTranscriptionProxy implements MessageComponentInterface
             . '&smart_format=' . urlencode($smartFormat)
             . '&encoding=' . urlencode($encoding)
             . '&sample_rate=' . urlencode($sampleRate)
-            . '&channels=' . urlencode($channels);
+            . '&channels=' . urlencode($channels)
+            . '&interim_results=' . urlencode($interimResults);
 
         echo "Connecting to Deepgram STT: model={$model}, language={$language}, "
             . "encoding={$encoding}, sample_rate={$sampleRate}, channels={$channels}\n";
