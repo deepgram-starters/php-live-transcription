@@ -1,0 +1,32 @@
+name: Validate
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone the source and submodules anonymously
+        env:
+          REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          REF: ${{ github.head_ref || github.ref_name }}
+        run: git clone --recurse-submodules --branch "$REF" "https://github.com/$REPOSITORY.git" source
+
+      - name: Lint PHP
+        run: docker run --rm -v "$PWD/source:/app" -w /app composer:2 php -l server.php
+
+      - name: Validate Composer metadata
+        run: docker run --rm -v "$PWD/source:/app" -w /app composer:2 sh -c "git config --global --add safe.directory /app && composer validate --no-check-publish --strict"
+
+      - name: Install and build the frontend
+        run: docker run --rm -v "$PWD/source:/app" -w /app node:24-slim sh -c "corepack enable && cd frontend && pnpm install --frozen-lockfile && pnpm build"
+
+      - name: Build the deploy image
+        run: docker build --file source/deploy/Dockerfile source
