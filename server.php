@@ -503,7 +503,7 @@ class LiveTranscriptionProxy implements MessageComponentInterface
                     unset($this->deepgramConnections[$connId]);
                     unset($this->pendingFrames[$connId], $this->pendingBytes[$connId]);
                     $this->sendProviderError($conn);
-                    $conn->close();
+                    $conn->close(1011);
                 });
             },
             function (\Exception $e) use ($conn, $connId) {
