@@ -101,7 +101,7 @@ These can be appended to the Deepgram WebSocket URL as query parameters:
 
 | Feature | Parameter | Example | Effect |
 |---------|-----------|---------|--------|
-| Interim results | `interim_results` | `true` | Show partial transcripts while speaking |
+| Interim results | `interim_results` | `true` (default: `false`) | Show partial transcripts while speaking |
 | Endpointing | `endpointing` | `300` | Silence duration (ms) before finalization |
 | Utterance end | `utterance_end_ms` | `1000` | Detect end of utterance |
 | VAD events | `vad_events` | `true` | Voice activity detection events |

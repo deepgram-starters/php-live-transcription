@@ -359,6 +359,15 @@ class LiveTranscriptionProxy implements MessageComponentInterface
     /** @var array<int, int> Deepgram message counters for logging */
     private $deepgramMessageCounts = [];
 
+    /** @var array<int, array<int, Frame|string>> Audio and control frames received before Deepgram connects */
+    private $pendingFrames = [];
+
+    /** @var array<int, int> Total pending bytes per client connection */
+    private $pendingBytes = [];
+
+    private const MAX_PENDING_MESSAGES = 128;
+    private const MAX_PENDING_BYTES = 512 * 1024;
+
     public function __construct($loop)
     {
         $this->loop = $loop;
@@ -411,11 +420,14 @@ class LiveTranscriptionProxy implements MessageComponentInterface
             . '&interim_results=' . urlencode($interimResults);
 
         echo "Connecting to Deepgram STT: model={$model}, language={$language}, "
-            . "encoding={$encoding}, sample_rate={$sampleRate}, channels={$channels}\n";
+            . "encoding={$encoding}, sample_rate={$sampleRate}, channels={$channels}, "
+            . "interim_results={$interimResults}\n";
 
         // Initialize message counters
         $this->clientMessageCounts[$connId] = 0;
         $this->deepgramMessageCounts[$connId] = 0;
+        $this->pendingFrames[$connId] = [];
+        $this->pendingBytes[$connId] = 0;
 
         // Connect to Deepgram via pawl (Ratchet WebSocket client)
         global $apiKey;
@@ -425,10 +437,21 @@ class LiveTranscriptionProxy implements MessageComponentInterface
             'Authorization' => 'Token ' . $apiKey,
         ])->then(
             function (\Ratchet\Client\WebSocket $deepgramWs) use ($conn, $connId) {
+                // The browser may have disconnected while the upstream handshake was pending.
+                if (!isset($this->pendingFrames[$connId])) {
+                    $deepgramWs->close();
+                    return;
+                }
+
                 // Store the Deepgram connection
                 $this->deepgramConnections[$connId] = $deepgramWs;
 
                 echo "Connected to Deepgram STT API (conn #{$connId})\n";
+
+                foreach ($this->pendingFrames[$connId] as $frame) {
+                    $deepgramWs->send($frame);
+                }
+                unset($this->pendingFrames[$connId], $this->pendingBytes[$connId]);
 
                 // Forward Deepgram messages to client
                 $deepgramWs->on('message', function ($msg) use ($conn, $connId) {
@@ -462,6 +485,14 @@ class LiveTranscriptionProxy implements MessageComponentInterface
                 $deepgramWs->on('close', function ($code = null, $reason = null) use ($conn, $connId) {
                     echo "Deepgram connection closed: {$code} {$reason} (conn #{$connId})\n";
                     unset($this->deepgramConnections[$connId]);
+                    if (is_int($code)
+                        && $code >= 1000
+                        && $code <= 4999
+                        && !in_array($code, [1004, 1005, 1006, 1015], true)) {
+                        $conn->close($code);
+                        return;
+                    }
+
                     $conn->close();
                 });
 
@@ -470,6 +501,7 @@ class LiveTranscriptionProxy implements MessageComponentInterface
                     echo "Deepgram WebSocket error: " . $e->getMessage()
                         . " (conn #{$connId})\n";
                     unset($this->deepgramConnections[$connId]);
+                    unset($this->pendingFrames[$connId], $this->pendingBytes[$connId]);
                     $this->sendProviderError($conn);
                     $conn->close();
                 });
@@ -477,6 +509,7 @@ class LiveTranscriptionProxy implements MessageComponentInterface
             function (\Exception $e) use ($conn, $connId) {
                 echo "Failed to connect to Deepgram: " . $e->getMessage()
                     . " (conn #{$connId})\n";
+                unset($this->pendingFrames[$connId], $this->pendingBytes[$connId]);
                 $this->sendProviderError($conn);
                 $conn->close(1011);
             }
@@ -504,17 +537,25 @@ class LiveTranscriptionProxy implements MessageComponentInterface
             echo "-> Client message #{$count} (size: {$size}) (conn #{$connId})\n";
         }
 
-        // Forward to Deepgram
+        $frame = $msg->isBinary()
+            ? new Frame($payload, true, Frame::OP_BINARY)
+            : $payload;
+
+        // Queue frames during the upstream handshake so the beginning of speech is retained.
         if (isset($this->deepgramConnections[$connId])) {
-            if ($msg->isBinary()) {
-                $this->deepgramConnections[$connId]->send(new Frame(
-                    $payload,
-                    true,
-                    Frame::OP_BINARY
-                ));
-            } else {
-                $this->deepgramConnections[$connId]->send($payload);
+            $this->deepgramConnections[$connId]->send($frame);
+        } elseif (isset($this->pendingFrames[$connId])) {
+            $this->pendingBytes[$connId] += strlen($payload);
+
+            if (count($this->pendingFrames[$connId]) >= self::MAX_PENDING_MESSAGES
+                || $this->pendingBytes[$connId] > self::MAX_PENDING_BYTES) {
+                echo "Pending queue exceeded before Deepgram opened (conn #{$connId})\n";
+                unset($this->pendingFrames[$connId], $this->pendingBytes[$connId]);
+                $from->close(1009);
+                return;
             }
+
+            $this->pendingFrames[$connId][] = $frame;
         }
     }
 
@@ -523,9 +564,17 @@ class LiveTranscriptionProxy implements MessageComponentInterface
      */
     private function sendProviderError(ConnectionInterface $conn): void
     {
+        $message = 'Unable to connect to the transcription service. Please try again.';
+
         $conn->send(json_encode([
             'type' => 'Error',
-            'description' => 'Unable to connect to the transcription service. Please try again.',
+            // Keep description while the pinned frontend consumes it; error is the starter contract.
+            'description' => $message,
+            'error' => [
+                'type' => 'PROVIDER_ERROR',
+                'code' => 'CONNECTION_FAILED',
+                'message' => $message,
+            ],
         ]));
     }
 
@@ -546,6 +595,7 @@ class LiveTranscriptionProxy implements MessageComponentInterface
 
         unset($this->clientMessageCounts[$connId]);
         unset($this->deepgramMessageCounts[$connId]);
+        unset($this->pendingFrames[$connId], $this->pendingBytes[$connId]);
     }
 
     /**
